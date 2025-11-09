@@ -1,0 +1,301 @@
+#!/usr/bin/env bash
+#
+# dmenu-wpctl - Audio/Video control menu for WirePlumber
+# https://github.com/iamanaws/dmenu-wpctl
+#
+# Interactive menu interface to manage audio and video devices
+# using wpctl (WirePlumber) and dmenu-compatible programs.
+#
+# Usage:
+#   dmenu-wpctl [--status|--audio|--video]
+#   MENU_PROGRAM=rofi dmenu-wpctl --audio
+#
+# BSD 3-Clause License
+#
+# Copyright (c) 2025, iamanaws Angel J.
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
+#
+# 1. Redistributions of source code must retain the above copyright notice, this
+#    list of conditions and the following disclaimer.
+#
+# 2. Redistributions in binary form must reproduce the above copyright notice,
+#    this list of conditions and the following disclaimer in the documentation
+#    and/or other materials provided with the distribution.
+#
+# 3. Neither the name of the copyright holder nor the names of its
+#    contributors may be used to endorse or promote products derived from
+#    this software without specific prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+# DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+# DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+# SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+# CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+# OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+# Menu program - can be overridden via MENU_PROGRAM env variable
+MENU_PROGRAM="${MENU_PROGRAM:-}"
+
+# Detect available menu programs if not specified
+if [[ -z "$MENU_PROGRAM" ]]; then
+    for prog in rofi wofi bemenu dmenu fuzzel tofi walker wmenu; do
+        if command -v "$prog" &>/dev/null; then
+            MENU_PROGRAM="$prog"
+            break
+        fi
+    done
+    [[ -z "$MENU_PROGRAM" ]] && { 
+        echo "Error: No supported menu program found. Install one of: rofi, wofi, bemenu, dmenu, fuzzel, tofi, walker, wmenu" >&2
+        exit 1
+    }
+fi
+
+# Build menu command
+build_menu_command() {
+    case "$MENU_PROGRAM" in
+        bemenu|dmenu|wmenu) echo "$MENU_PROGRAM -p" ;;
+        fuzzel) echo "fuzzel --dmenu --placeholder" ;;
+        tofi)   echo "tofi --require-match=false --prompt-text" ;;
+        walker) echo "walker -d -p" ;;
+        wofi)   echo "wofi --dmenu -p" ;;
+        rofi|*) echo "rofi -dmenu -p" ;;
+    esac
+}
+
+# Check if menu program supports preselection
+supports_preselection() { [[ "$MENU_PROGRAM" =~ ^(rofi|wofi)$ ]]; }
+
+rofi_command="$(build_menu_command)"
+
+# Get device volume and mute status
+get_device_info() {
+    local device=$1
+    local volume_data=$(wpctl get-volume "$device" 2>/dev/null)
+    
+    if [[ -z "$volume_data" ]]; then
+        echo "0 Unmuted"
+        return
+    fi
+    
+    read -r _ vol_float mute_flag <<< "$volume_data"
+    local volume=$(awk "BEGIN {printf \"%.0f\", ${vol_float:-0} * 100}")
+    local mute_status=$([[ "$mute_flag" == "[MUTED]" ]] && echo "Muted" || echo "Unmuted")
+    
+    echo "$volume $mute_status"
+}
+
+# Get device volume
+get_device_volume() { get_device_info "$1" | awk '{print $1}'; }
+
+# Get device mute status
+get_device_mute_status() { get_device_info "$1" | awk '{print $2}'; }
+
+# Toggle device mute state
+toggle_mute() {
+    local device_id=$1
+    local device_type=$2
+    local caller=${3:-audio}
+    local preselect="${4:-}"
+    wpctl set-mute "$device_id" toggle 2>/dev/null
+    sleep 0.1
+    device_menu "$device_id" "$device_type" "$caller" "$preselect"
+}
+
+# Adjust device volume
+adjust_volume() {
+    local device_id=$1
+    local device_type=$2
+    local adjustment=$3
+    local caller=${4:-audio}
+    local preselect="${5:-}"
+    wpctl set-volume "$device_id" "$adjustment" 2>/dev/null
+    sleep 0.1
+    device_menu "$device_id" "$device_type" "$caller" "$preselect"
+}
+
+# Set device as default
+set_default() {
+    local device_id=$1
+    local device_type=$2
+    local caller=${3:-audio}
+    local preselect="${4:-}"
+    wpctl set-default "$device_id" 2>/dev/null
+    sleep 0.2
+    device_menu "$device_id" "$device_type" "$caller" "$preselect"
+}
+
+# Extract default device ID from section
+get_default_device_id() {
+    echo "$1" | grep -A 50 "$2:" | grep "*" | head -1 | grep -oE '[0-9]+' | head -1
+}
+
+# Get device name from ID
+get_device_name() {
+    local section="Sinks"
+    [[ "$2" != "sink" ]] && section="Sources"
+    echo "$3" | grep -A 50 "$section:" | grep " $1\." | sed -E 's/^.*[0-9]+\. //; s/ \[.*\]//' | head -1
+}
+
+# Check if device is default
+is_default_device() {
+    local section="Sinks"
+    [[ "$2" != "sink" ]] && section="Sources"
+    [[ "$(get_default_device_id "$3" "$section")" == "$1" ]]
+}
+
+# Device control menu (volume, mute, set as default)
+device_menu() {
+    local device_id=$1 device_type=$2 caller=${3:-audio} preselect="${4:-}"
+    
+    local audio=$(wpctl status 2>/dev/null | awk '/^Audio$/,/^Video$/')
+    local device_name=$(get_device_name "$device_id" "$device_type" "$audio" | xargs)
+    device_name=${device_name:-Device $device_id}
+    
+    local device_info=$(get_device_info "$device_id")
+    read -r volume mute_status <<< "$device_info"
+    is_default_device "$device_id" "$device_type" "$audio" && local is_default=true || local is_default=false
+    local io_type=$([ "$device_type" = "sink" ] && echo "Output" || echo "Input")
+    local default_action="Set as Default $io_type"
+    local options="Volume: ${volume}%\nMute: ${mute_status}"
+    [[ "$is_default" == false ]] && options+="\n${default_action}"
+    options+="\n\nVolume: +5%\nVolume: +10%\nVolume: -5%\nVolume: -10%\n\nBack\nExit"
+    
+    # Display menu with preselect support (only for rofi/wofi)
+    local chosen
+    if supports_preselection && [[ -n "$preselect" ]]; then
+        local sel_row=$(echo -e "$options" | nl -ba -w1 -s $'\t' | awk -F'\t' -v tgt="$preselect" '$2 == tgt { print $1-1; exit }')
+        if [[ -n "$sel_row" ]]; then
+            chosen="$(echo -e "$options" | $rofi_command "$device_name" -selected-row "$sel_row")"
+        else
+            chosen="$(echo -e "$options" | $rofi_command "$device_name" -select "$preselect")"
+        fi
+    else
+        chosen="$(echo -e "$options" | $rofi_command "$device_name")"
+    fi
+    
+    case "$chosen" in
+        "") echo "No option chosen." ;;
+        "Mute:"*) toggle_mute "$device_id" "$device_type" "$caller" "Mute:" ;;
+        "Volume: +"[0-9]*"%")
+            local amount=${chosen#Volume: +}; amount=${amount%\%}
+            adjust_volume "$device_id" "$device_type" "${amount}%+" "$caller" "$chosen"
+            ;;
+        "Volume: -"[0-9]*"%")
+            local amount=${chosen#Volume: -}; amount=${amount%\%}
+            adjust_volume "$device_id" "$device_type" "${amount}%-" "$caller" "$chosen"
+            ;;
+        "$default_action")
+            set_default "$device_id" "$device_type" "$caller" "$chosen"
+            ;;
+        "Back")
+            [[ "$caller" == "video" ]] && video_menu || audio_menu
+            ;;
+    esac
+}
+
+# Print current audio status
+print_status() {
+    read -r sink_vol sink_mute <<< "$(get_device_info "@DEFAULT_AUDIO_SINK@")"
+    read -r source_vol source_mute <<< "$(get_device_info "@DEFAULT_AUDIO_SOURCE@")"
+    [[ "$sink_mute" == "Muted" ]] && printf "󰝟" || printf "󰕾 %s%%" "$sink_vol"
+    [[ "$source_mute" == "Muted" ]] && printf " 󰍭" || printf " 󰍬 %s%%" "$source_vol"
+    printf "\n"
+}
+
+# Main menu
+main_menu() {
+    local chosen="$(echo -e "Audio\nVideo\n\nExit" | $rofi_command "wpctl")"
+    
+    case "$chosen" in
+        "Audio") audio_menu ;;
+        "Video") video_menu ;;
+        "") echo "No option chosen." ;;
+    esac
+}
+
+# Build device list options
+format_device_list() {
+    local section=$1 label=$2 device_type=$3
+    local audio=$4
+    local devices=$(echo "$audio" | sed -n "/├─ $section:/,/├─/p" | grep -E '[0-9]+\.' | head -10)
+    
+    [[ -z "$devices" ]] && return
+    
+    echo -e "${label}:"
+    while read -r line; do
+        [[ -z "$line" ]] && continue
+        local device_id=$(echo "$line" | grep -oE '[0-9]+' | head -1)
+        local device_name=$(echo "$line" | sed -E 's/^.*[0-9]+\. //; s/ \[.*//')
+        local volume=""
+        [[ "$device_type" =~ ^(sink|source)$ ]] && volume=" ($(get_device_volume "$device_id")%)"
+        echo "  [${device_id}] ${device_name}${volume}"
+    done <<< "$devices"
+    echo "\n"
+}
+
+# Audio section menu
+audio_menu() {
+    local audio=$(wpctl status 2>/dev/null | awk '/^Audio$/,/^Video$/')
+    read -r sink_vol sink_mute <<< "$(get_device_info "@DEFAULT_AUDIO_SINK@")"
+    read -r source_vol source_mute <<< "$(get_device_info "@DEFAULT_AUDIO_SOURCE@")"
+    local sink_id=$(get_default_device_id "$audio" "Sinks")
+    local source_id=$(get_default_device_id "$audio" "Sources")
+    local sink_name=$(get_device_name "$sink_id" "sink" "$audio")
+    local source_name=$(get_device_name "$source_id" "source" "$audio")
+    
+    sink_name=${sink_name:-Default Output}
+    source_name=${source_name:-Default Input}
+    
+    # Build options
+    local options="Output: ${sink_name} (${sink_vol}%, ${sink_mute})\n"
+    options+="Input: ${source_name} (${source_vol}%, ${source_mute})\n\n"
+    options+="$(format_device_list "Sinks" "Output Devices" "sink" "$audio")"
+    options+="$(format_device_list "Sources" "Input Devices" "source" "$audio")"
+    options+="Back\nExit"
+    
+    local chosen="$(echo -e "$options" | $rofi_command "Audio")"
+    
+    case "$chosen" in
+        "") echo "No option chosen." ;;
+        "Output: "*) device_menu "$sink_id" "sink" "audio" ;;
+        "Input: "*) device_menu "$source_id" "source" "audio" ;;
+        "  "*)
+            local device_id=$(echo "$chosen" | sed -n 's/.*\[\([0-9]*\)\].*/\1/p')
+            local device_type="sink"
+            echo "$audio" | grep -A 50 "Sources:" | grep -q " ${device_id}\." && device_type="source"
+            device_menu "$device_id" "$device_type" "audio"
+            ;;
+        "Back") main_menu ;;
+    esac
+}
+
+# Video section menu
+video_menu() {
+    local video=$(wpctl status 2>/dev/null | awk '/^Video$/,/^Settings$/')
+    local source_id=$(get_default_device_id "$video" "Sources")
+    local default_source=$(get_device_name "$source_id" "source" "$video")
+    default_source=${default_source:-No default source}
+    
+    local options="Default: ${default_source}\n\n"
+    options+="$(format_device_list "Sources" "Video Sources" "video" "$video")"
+    options+="Back\nExit"
+    
+    local chosen="$(echo -e "$options" | $rofi_command "Video")"
+    case "$chosen" in
+        "Back") main_menu ;;
+        "") echo "No option chosen." ;;
+    esac
+}
+
+case "$1" in
+    --status) print_status ;;
+    --audio) audio_menu ;;
+    --video) video_menu ;;
+    *) main_menu ;;
+esac

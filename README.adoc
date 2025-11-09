@@ -1,0 +1,75 @@
+= dmenu-wpctl
+:wireplumber-url: https://pipewire.pages.freedesktop.org/wireplumber/
+:wpctl-url: https://pipewire.pages.freedesktop.org/wireplumber/tools/wpctl.html
+:rofi-url: https://github.com/davatorium/rofi
+:wofi-url: https://hg.sr.ht/~scoopta/wofi
+:bemenu-url: https://github.com/Cloudef/bemenu
+:dmenu-url: https://tools.suckless.org/dmenu/
+:fuzzel-url: https://codeberg.org/dnkl/fuzzel
+:tofi-url: https://github.com/philj56/tofi
+:walker-url: https://github.com/abenz1267/walker
+:wmenu-url: https://codeberg.org/adnano/wmenu
+
+Audio and video device manager with interactive menu interface.
+
+== Overview
+
+`dmenu-wpctl` provides an interactive menu-driven interface to control audio and video devices using {wireplumber-url}[WirePlumber] ({wpctl-url}[wpctl]).
+
+Features:
+
+* Switch default audio/video devices
+* Mute/unmute devices
+* Adjust output/input volume
+* Display current device status
+* Compatible with multiple menu programs
+
+== Requirements
+
+* {wpctl-url}[wpctl] ({wireplumber-url}[WirePlumber] Control CLI)
+* Menu program: {rofi-url}[rofi], {wofi-url}[wofi], {bemenu-url}[bemenu], {dmenu-url}[dmenu], {fuzzel-url}[fuzzel], {tofi-url}[tofi], {walker-url}[walker], or {wmenu-url}[wmenu]
+
+== Usage
+
+=== Basic Usage
+
+Launch the main menu:
+[source,bash]
+----
+dmenu-wpctl
+----
+
+=== Command-line Options
+
+Show current device status:
+[source,bash]
+----
+dmenu-wpctl --status
+----
+
+Open audio menu directly:
+[source,bash]
+----
+dmenu-wpctl --audio
+----
+
+Open video menu directly:
+[source,bash]
+----
+dmenu-wpctl --video
+----
+
+=== Environment Variables
+
+Override the default menu program:
+[source,bash]
+----
+MENU_PROGRAM=rofi dmenu-wpctl
+----
+
+If not set, the script will automatically detect and use the first available menu program.
+
+== License
+
+See link:LICENSE[] for details.
+
