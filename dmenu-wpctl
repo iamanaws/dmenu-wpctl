@@ -138,16 +138,44 @@ set_default() {
     device_menu "$device_id" "$device_type" "$caller" "$preselect"
 }
 
+# Read only device rows in the requested section, without tree decorations.
+get_section_devices() {
+    printf '%s\n' "$1" | awk -v section="$2" '
+        {
+            line = $0
+            sub(/^[^[:alnum:]*]*/, "", line)
+            sub(/[[:space:]]+$/, "", line)
+            if (line == section ":") { in_section = 1; next }
+            if (in_section && line ~ /^[[:alpha:]]/) exit
+            if (in_section && line ~ /^(\*[[:space:]]*)?[0-9]+\./) print line
+        }
+    '
+}
+
 # Extract default device ID from section
 get_default_device_id() {
-    echo "$1" | grep -A 50 "$2:" | grep -F "*" | head -1 | grep -oE '[0-9]+' | head -1
+    get_section_devices "$1" "$2" | awk '/^\*/ {
+        sub(/^\*[[:space:]]*/, "")
+        sub(/\..*/, "")
+        print
+        exit
+    }'
 }
 
 # Get device name from ID
 get_device_name() {
+    [[ "$1" =~ ^[0-9]+$ ]] || return 0
     local section="Sinks"
     [[ "$2" != "sink" ]] && section="Sources"
-    echo "$3" | grep -A 50 "$section:" | grep " $1\." | sed -E 's/^.*[0-9]+\. //; s/ \[.*\]//' | head -1
+    get_section_devices "$3" "$section" | awk -v id="$1" '
+        { sub(/^\*[[:space:]]*/, "") }
+        $1 == id "." {
+            sub(/^[0-9]+\.[[:space:]]*/, "")
+            sub(/[[:space:]]+\[.*$/, "")
+            print
+            exit
+        }
+    '
 }
 
 # Check if device is default
@@ -160,11 +188,12 @@ is_default_device() {
 # Device control menu (volume, mute, set as default)
 device_menu() {
     local device_id=$1 device_type=$2 caller=${3:-audio} preselect="${4:-}"
+    [[ "$device_id" =~ ^[0-9]+$ ]] || return 0
     
     local audio
     audio=$(wpctl status 2>/dev/null | awk '/^Audio$/,/^Video$/')
     local device_name
-    device_name=$(get_device_name "$device_id" "$device_type" "$audio" | xargs)
+    device_name=$(get_device_name "$device_id" "$device_type" "$audio")
     device_name=${device_name:-Device $device_id}
     
     local device_info
@@ -251,7 +280,7 @@ format_device_list() {
     local section=$1 label=$2 device_type=$3
     local audio=$4
     local devices
-    devices=$(echo "$audio" | sed -n "/├─ $section:/,/├─/p" | grep -E '[0-9]+\.' | head -10)
+    devices=$(get_section_devices "$audio" "$section" | head -10)
     
     [[ -z "$devices" ]] && return
     
@@ -261,7 +290,7 @@ format_device_list() {
         local device_id
         device_id=$(echo "$line" | grep -oE '[0-9]+' | head -1)
         local device_name
-        device_name=$(echo "$line" | sed -E 's/^.*[0-9]+\. //; s/ \[.*//')
+        device_name=$(echo "$line" | sed -E 's/^\*?[[:space:]]*[0-9]+\.[[:space:]]*//; s/ \[.*//')
         local volume=""
         [[ "$device_type" =~ ^(sink|source)$ ]] && volume=" ($(get_device_volume "$device_id")%)"
         echo "  [${device_id}] ${device_name}${volume}"
@@ -275,8 +304,6 @@ format_device_list() {
 audio_menu() {
     local audio
     audio=$(wpctl status 2>/dev/null | awk '/^Audio$/,/^Video$/')
-    read -r sink_vol sink_mute <<< "$(get_device_info "@DEFAULT_AUDIO_SINK@")"
-    read -r source_vol source_mute <<< "$(get_device_info "@DEFAULT_AUDIO_SOURCE@")"
     local sink_id
     sink_id=$(get_default_device_id "$audio" "Sinks")
     local source_id
@@ -289,9 +316,20 @@ audio_menu() {
     sink_name=${sink_name:-Default Output}
     source_name=${source_name:-Default Input}
     
-    # Build options
-    local options="Output: ${sink_name} (${sink_vol}%, ${sink_mute})\n"
-    options+="Input: ${source_name} (${source_vol}%, ${source_mute})\n\n"
+    # Keep missing defaults visible, but never offer controls for an empty ID.
+    local options="" sink_vol sink_mute source_vol source_mute
+    if [[ -n "$sink_id" ]]; then
+        read -r sink_vol sink_mute <<< "$(get_device_info "$sink_id")"
+        options+="Output: ${sink_name} (${sink_vol}%, ${sink_mute})\n"
+    else
+        options+="Output: No default device\n"
+    fi
+    if [[ -n "$source_id" ]]; then
+        read -r source_vol source_mute <<< "$(get_device_info "$source_id")"
+        options+="Input: ${source_name} (${source_vol}%, ${source_mute})\n\n"
+    else
+        options+="Input: No default device\n\n"
+    fi
     options+="$(format_device_list "Sinks" "Output Devices" "sink" "$audio")"
     options+="$(format_device_list "Sources" "Input Devices" "source" "$audio")"
     options+="Back\nExit"
@@ -307,7 +345,7 @@ audio_menu() {
             local device_id
             device_id=$(echo "$chosen" | sed -n 's/.*\[\([0-9]*\)\].*/\1/p')
             local device_type="sink"
-            echo "$audio" | grep -A 50 "Sources:" | grep -q " ${device_id}\." && device_type="source"
+            get_section_devices "$audio" "Sources" | grep -qE "^\*?[[:space:]]*${device_id}\." && device_type="source"
             device_menu "$device_id" "$device_type" "audio"
             ;;
         "Back") main_menu ;;
